@@ -200,4 +200,4 @@ Commands:
 
 ## License
 
-Proprietary - DataMasque
+Apache-2.0 — see [LICENSE](LICENSE).

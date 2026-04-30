@@ -2,6 +2,8 @@
 name = "masque-bricks"
 version = "0.1.0"
 description = "CLI tool to orchestrate Databricks table masking via DataMasque file masking"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = [
     "databricks-sql-connector>=3.0.0",
