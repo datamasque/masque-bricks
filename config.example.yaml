@@ -1,0 +1,26 @@
+# masque-bricks configuration
+# Copy this file to config.yaml and fill in your credentials
+
+databricks:
+  # Databricks workspace URL
+  host: https://your-workspace.cloud.databricks.com
+
+  # SQL warehouse HTTP path (find in SQL Warehouse > Connection details)
+  http_path: /sql/1.0/warehouses/your-warehouse-id
+
+  # Personal Access Token
+  # Generate in Databricks: User settings > Developer > Access tokens
+  token: dapi1234567890abcdef
+
+datamasque:
+  # DataMasque instance URL
+  host: https://datamasque.example.com
+  # DataMasque login credentials
+  username: admin
+  password: your-password
+
+s3:
+  # S3 bucket for intermediate file storage
+  bucket: your-masking-bucket
+  # AWS region (optional, defaults to us-east-1)
+  region: us-east-1

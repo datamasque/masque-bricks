@@ -1,0 +1,11 @@
+version: "1.0"
+tasks:
+  - type: mask_tabular_file
+    recurse: true
+    include:
+      - glob: "*.parquet"
+    rules:
+      - column: first_name
+        masks:
+          - type: from_fixed
+            value: MASKED
