@@ -226,6 +226,6 @@ masque-bricks run \
 
 ## Related Resources
 
-- [DataMasque file masking documentation](https://docs.datamasque.com/)
+- [DataMasque file masking documentation](https://datamasque.com/portal/documentation/)
 - [Databricks external locations](https://docs.databricks.com/en/connect/unity-catalog/external-locations.html)
 - [AWS S3 IAM policies](https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-policies-s3.html)
