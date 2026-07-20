@@ -1,5 +1,6 @@
 """Command-line interface for masque-bricks."""
 
+import hashlib
 import random
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +36,11 @@ def _connection_name(role: str, bucket: str, base_directory: str) -> str:
     """
     slug = "_".join(p for p in (bucket, base_directory.strip("/")) if p)
     safe = "".join(c if c.isalnum() else "_" for c in slug)
-    return f"masque_bricks_{role}_{safe}"
+    # Slugification is lossy ("raw/users" and "raw-users" both become "raw_users"), so a
+    # readable-slug-only name could still collide and reuse the wrong-prefix connection.
+    # A short digest of the exact inputs disambiguates any such collision.
+    digest = hashlib.sha1(f"{bucket}\0{base_directory}".encode()).hexdigest()[:8]
+    return f"masque_bricks_{role}_{safe}_{digest}"
 
 
 def qualify_schema(catalog: str | None, schema: str) -> str:

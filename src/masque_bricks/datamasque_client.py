@@ -42,6 +42,7 @@ class DataMasqueClient:
         # would otherwise re-send it and launch duplicate masking runs / connections / rulesets.
         retry = Retry(
             total=4,
+            connect=0,  # fail fast on a down host; retries here just delay the error ~14s
             backoff_factor=1,
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset({"GET"}),

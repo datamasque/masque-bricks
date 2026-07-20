@@ -22,6 +22,11 @@ def test_run_and_mask_prefixes_do_not_collide():
     assert run_name != mask_name
 
 
+def test_slug_collisions_stay_distinct():
+    # "raw/users" and "raw-users" slugify identically; the digest must keep them apart.
+    assert _connection_name("source", "b", "raw/users") != _connection_name("source", "b", "raw-users")
+
+
 def test_role_separates_source_and_dest():
     assert _connection_name("source", "b", "raw") != _connection_name("dest", "b", "raw")
 
