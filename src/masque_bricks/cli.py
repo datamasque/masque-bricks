@@ -1,13 +1,15 @@
 """Command-line interface for masque-bricks."""
 
-from datetime import datetime
+import hashlib
+import random
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
 from dotenv import load_dotenv
 
 from .config import load_config
-from .databricks_client import DatabricksClient
+from .databricks_client import DatabricksClient, _quote_identifier
 from .datamasque_client import DataMasqueClient, DataMasqueError
 from .s3_client import S3Client, s3_uri
 
@@ -23,6 +25,22 @@ def get_clients(config_path: str | None = None):
         DataMasqueClient(config.datamasque),
         config,
     )
+
+
+def _connection_name(role: str, bucket: str, base_directory: str) -> str:
+    """Build a DataMasque connection name unique to (role, bucket, base_directory).
+
+    DataMasque looks connections up by name and ignores ``base_directory`` on a name match,
+    so a bucket-only name would let one command silently reuse another's connection pointed
+    at the wrong prefix (masking the wrong path). Encoding the prefix keeps them distinct.
+    """
+    slug = "_".join(p for p in (bucket, base_directory.strip("/")) if p)
+    safe = "".join(c if c.isalnum() else "_" for c in slug)
+    # Slugification is lossy ("raw/users" and "raw-users" both become "raw_users"), so a
+    # readable-slug-only name could still collide and reuse the wrong-prefix connection.
+    # A short digest of the exact inputs disambiguates any such collision.
+    digest = hashlib.sha1(f"{bucket}\0{base_directory}".encode()).hexdigest()[:8]
+    return f"masque_bricks_{role}_{safe}_{digest}"
 
 
 def qualify_schema(catalog: str | None, schema: str) -> str:
@@ -71,7 +89,7 @@ def export(ctx, table: str, schema: str, catalog: str | None, output_prefix: str
     databricks_client, _, _, config = get_clients(ctx.obj.get("config_path"))
 
     full_schema = qualify_schema(catalog, schema)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     s3_path = s3_uri(config.s3.bucket, output_prefix, table, timestamp)
 
     click.echo(f"Exporting {full_schema}.{table} to S3...")
@@ -118,11 +136,14 @@ def mask(
 
     click.echo(f"Setting up DataMasque masking run...")
 
+    source_dir = source_prefix.rstrip("/")
+    dest_dir = dest_prefix.rstrip("/")
+
     # Create or get source connection
     source_conn = datamasque_client.get_or_create_connection(
-        name=f"masque_bricks_source_{config.s3.bucket.replace('-', '_')}",
+        name=_connection_name("source", config.s3.bucket, source_dir),
         bucket=config.s3.bucket,
-        base_directory=source_prefix.rstrip("/"),
+        base_directory=source_dir,
         is_source=True,
         is_destination=False,
     )
@@ -130,9 +151,9 @@ def mask(
 
     # Create or get destination connection
     dest_conn = datamasque_client.get_or_create_connection(
-        name=f"masque_bricks_dest_{config.s3.bucket.replace('-', '_')}",
+        name=_connection_name("dest", config.s3.bucket, dest_dir),
         bucket=config.s3.bucket,
-        base_directory=dest_prefix.rstrip("/"),
+        base_directory=dest_dir,
         is_source=False,
         is_destination=True,
     )
@@ -147,7 +168,7 @@ def mask(
     click.echo(f"Ruleset: {ruleset['name']} (ID: {ruleset['id']})")
 
     # Start masking run
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run = datamasque_client.start_masking_run(
         name=f"masque_bricks_{timestamp}",
         source_connection_id=source_conn["id"],
@@ -235,7 +256,7 @@ def run(
         ctx.obj.get("config_path")
     )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     raw_prefix = f"raw/{table}/{timestamp}"
     masked_prefix = f"masked/{table}/{timestamp}"
     raw_s3_path = s3_uri(config.s3.bucket, raw_prefix)
@@ -263,7 +284,7 @@ def run(
     ruleset_name = ruleset_path.stem
 
     source_conn = datamasque_client.get_or_create_connection(
-        name=f"masque_bricks_source_{config.s3.bucket.replace('-', '_')}",
+        name=_connection_name("source", config.s3.bucket, "raw"),
         bucket=config.s3.bucket,
         base_directory="raw",
         is_source=True,
@@ -271,7 +292,7 @@ def run(
     )
 
     dest_conn = datamasque_client.get_or_create_connection(
-        name=f"masque_bricks_dest_{config.s3.bucket.replace('-', '_')}",
+        name=_connection_name("dest", config.s3.bucket, "masked"),
         bucket=config.s3.bucket,
         base_directory="masked",
         is_source=False,
@@ -342,8 +363,6 @@ def check(ctx):
     click.echo("1. Databricks")
     click.echo(f"   Host: {config.databricks.host}")
     click.echo(f"   Auth: {config.databricks.auth_type}")
-    if config.databricks.auth_type == "oauth":
-        click.echo(f"   Client ID: {config.databricks.client_id[:8]}...")
     try:
         databricks_client = DatabricksClient(config.databricks)
         result = databricks_client.execute_sql("SELECT 1 as test")
@@ -393,6 +412,7 @@ def load_test_data(ctx, table: str, schema: str, catalog: str | None, rows: int,
     databricks_client, _, _, _ = get_clients(ctx.obj.get("config_path"))
 
     full_table = qualify_table(catalog, schema, table)
+    safe_table = _quote_identifier(full_table)
 
     # Sample data pools
     first_names = [
@@ -407,7 +427,6 @@ def load_test_data(ctx, table: str, schema: str, catalog: str | None, rows: int,
     ]
     domains = ["gmail.com", "yahoo.com", "outlook.com", "company.com", "example.org"]
 
-    import random
     random.seed(42)  # Reproducible data
 
     click.echo(f"Generating {rows} rows of test PII data...")
@@ -426,11 +445,11 @@ def load_test_data(ctx, table: str, schema: str, catalog: str | None, rows: int,
     try:
         if drop:
             click.echo(f"Dropping table if exists: {full_table}")
-            databricks_client.execute_sql(f"DROP TABLE IF EXISTS {full_table}")
+            databricks_client.execute_sql(f"DROP TABLE IF EXISTS {safe_table}")
 
         click.echo(f"Creating table: {full_table}")
         databricks_client.execute_sql(f"""
-        CREATE TABLE IF NOT EXISTS {full_table} (
+        CREATE TABLE IF NOT EXISTS {safe_table} (
             id INT,
             first_name STRING,
             last_name STRING,
@@ -474,7 +493,7 @@ def list_schemas(ctx, catalog: str | None):
     databricks_client, _, _, _ = get_clients(ctx.obj.get("config_path"))
 
     if catalog:
-        sql = f"SHOW SCHEMAS IN {catalog}"
+        sql = f"SHOW SCHEMAS IN {_quote_identifier(catalog)}"
         click.echo(f"Schemas in {catalog}:\n")
     else:
         sql = "SHOW SCHEMAS"
@@ -500,7 +519,7 @@ def list_tables(ctx, schema: str, catalog: str | None):
     click.echo(f"Tables in {full_schema}:\n")
 
     try:
-        results = databricks_client.execute_sql(f"SHOW TABLES IN {full_schema}")
+        results = databricks_client.execute_sql(f"SHOW TABLES IN {_quote_identifier(full_schema)}")
         for row in results:
             # Format: database, tableName, isTemporary
             click.echo(f"  {row[1]}")
@@ -519,15 +538,16 @@ def preview(ctx, table: str, schema: str, catalog: str | None, limit: int):
     databricks_client, _, _, _ = get_clients(ctx.obj.get("config_path"))
 
     full_table = qualify_table(catalog, schema, table)
+    safe_table = _quote_identifier(full_table)
     click.echo(f"Preview of {full_table} (limit {limit}):\n")
 
     try:
         # Get column names
-        columns = databricks_client.execute_sql(f"DESCRIBE {full_table}")
+        columns = databricks_client.execute_sql(f"DESCRIBE {safe_table}")
         col_names = [row[0] for row in columns if not row[0].startswith("#")]
 
         # Get data
-        results = databricks_client.execute_sql(f"SELECT * FROM {full_table} LIMIT {limit}")
+        results = databricks_client.execute_sql(f"SELECT * FROM {safe_table} LIMIT {limit}")
 
         if not results:
             click.echo("  (empty table)")
@@ -567,7 +587,7 @@ def describe(ctx, table: str, schema: str, catalog: str | None):
     click.echo(f"Schema of {full_table}:\n")
 
     try:
-        results = databricks_client.execute_sql(f"DESCRIBE {full_table}")
+        results = databricks_client.execute_sql(f"DESCRIBE {_quote_identifier(full_table)}")
 
         click.echo(f"{'Column':<30} {'Type':<20} {'Comment':<30}")
         click.echo("-" * 80)
@@ -588,7 +608,12 @@ def describe(ctx, table: str, schema: str, catalog: str | None):
 @click.argument("sql")
 @click.pass_context
 def query(ctx, sql: str):
-    """Run a SQL query and show results."""
+    """Run a SQL query and show results.
+
+    The SQL is executed verbatim against the configured warehouse — its input is
+    trusted (the operator authors it), so it is intentionally not quoted/validated
+    like the identifier-driven pipeline commands. Do not wire this to untrusted input.
+    """
     databricks_client, _, _, _ = get_clients(ctx.obj.get("config_path"))
 
     try:

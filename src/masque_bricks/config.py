@@ -50,6 +50,9 @@ class DataMasqueConfig:
     host: str
     username: str
     password: str
+    # Verify the DataMasque server's TLS certificate. Default secure (True);
+    # set False only for instances with self-signed certs you trust.
+    verify_ssl: bool = True
 
 
 @dataclass
@@ -74,6 +77,26 @@ DEFAULT_CONFIG_PATHS = [
     Path("config.yml"),
     Path.home() / ".config" / "masque-bricks" / "config.yaml",
 ]
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    """Coerce a YAML/env value to bool.
+
+    Recognised true: 1/true/yes/on. Recognised false: 0/false/no/off. Anything
+    unset, empty, or unrecognised returns ``default`` — so a typo in a security
+    toggle (e.g. DATAMASQUE_VERIFY_SSL=enabled) keeps the secure default rather
+    than silently flipping it off.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    s = str(value).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 def _get_nested(data: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -111,7 +134,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
         DATABRICKS_HOST, DATABRICKS_HTTP_PATH
         DATABRICKS_TOKEN (for token auth)
         DATABRICKS_CLIENT_ID, DATABRICKS_CLIENT_SECRET (for OAuth)
-        DATAMASQUE_HOST, DATAMASQUE_TOKEN
+        DATAMASQUE_HOST, DATAMASQUE_USERNAME, DATAMASQUE_PASSWORD, DATAMASQUE_VERIFY_SSL
         S3_BUCKET, AWS_REGION
 
     Args:
@@ -207,6 +230,15 @@ def load_config(config_path: str | Path | None = None) -> Config:
     if not datamasque_password:
         missing.append("datamasque.password")
 
+    # TLS verification — default secure (True). Override per-instance for self-signed certs.
+    datamasque_verify_ssl = _as_bool(
+        os.environ.get(
+            "DATAMASQUE_VERIFY_SSL",
+            _get_nested(data, "datamasque", "verify_ssl", default=None),
+        ),
+        default=True,
+    )
+
     # S3 config
     s3_bucket = os.environ.get(
         "S3_BUCKET", _get_nested(data, "s3", "bucket", default="")
@@ -236,6 +268,7 @@ def load_config(config_path: str | Path | None = None) -> Config:
             host=datamasque_host,
             username=datamasque_username,
             password=datamasque_password,
+            verify_ssl=datamasque_verify_ssl,
         ),
         s3=S3Config(
             bucket=s3_bucket,

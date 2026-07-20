@@ -1,4 +1,8 @@
 version: "1.0"
+# Masks every PII column produced by `masque-bricks load-test-data`
+# (first_name, last_name, name, email, phone, ssn) using DataMasque's built-in
+# seed files, so the masked output is realistic rather than obviously fake.
+# The `id` column is a non-sensitive integer key and is intentionally left untouched.
 tasks:
   - type: mask_tabular_file
     recurse: true
@@ -7,5 +11,48 @@ tasks:
     rules:
       - column: first_name
         masks:
-          - type: from_fixed
-            value: MASKED
+          - type: from_file
+            seed_file: DataMasque_firstNames_mixed.csv
+            seed_column: firstname-mixed
+      - column: last_name
+        masks:
+          - type: from_file
+            seed_file: DataMasque_lastNames_v2.csv
+            seed_column: lastnames
+      - column: name
+        masks:
+          - type: concat
+            glue: " "
+            masks:
+              - type: from_file
+                seed_file: DataMasque_firstNames_mixed.csv
+                seed_column: firstname-mixed
+              - type: from_file
+                seed_file: DataMasque_lastNames_v2.csv
+                seed_column: lastnames
+      - column: email
+        masks:
+          # firstname.lastname + a fake email suffix -> realistic-looking address
+          - type: chain
+            masks:
+              - type: concat
+                masks:
+                  - type: concat
+                    glue: "."
+                    masks:
+                      - type: from_file
+                        seed_file: DataMasque_firstNames_mixed.csv
+                        seed_column: firstname-mixed
+                      - type: from_file
+                        seed_file: DataMasque_lastNames_v2.csv
+                        seed_column: lastnames
+                  - type: from_file
+                    seed_file: DataMasque_fake_email_suffixes.csv
+                    seed_column: email-suff
+      - column: phone
+        masks:
+          # imitate preserves the format (digits -> digits, punctuation kept)
+          - type: imitate
+      - column: ssn
+        masks:
+          - type: social_security_number

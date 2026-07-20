@@ -2,12 +2,46 @@
 
 from typing import Literal
 
+import requests
 from databricks import sql
 
 from .config import DatabricksConfig
 
-FileFormat = Literal["PARQUET", "CSV", "JSON", "DELTA"]
 ImportMode = Literal["OVERWRITE", "APPEND"]
+
+# The pipeline is Parquet-only end to end (export writes Parquet, import reads it back).
+FILE_FORMAT = "PARQUET"
+
+# Databricks SQL identifiers (catalog/schema/table) are not parameterisable, so they are
+# interpolated into SQL text. Backtick-quote each dot-separated part and reject anything
+# that can't be a plain identifier to keep these strings off the SQL-injection surface.
+
+
+def _quote_identifier(name: str) -> str:
+    """Backtick-quote a possibly-qualified identifier (``a.b.c`` -> `` `a`.`b`.`c` ``).
+
+    Each part is validated as a non-empty identifier and embedded backticks are doubled,
+    matching Databricks' delimited-identifier escaping.
+    """
+    parts = name.split(".")
+    quoted = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            raise ValueError(f"Invalid SQL identifier: {name!r}")
+        quoted.append("`" + part.replace("`", "``") + "`")
+    return ".".join(quoted)
+
+
+def _validate_s3_path(s3_path: str) -> str:
+    """Reject S3 paths with SQL-delimiter characters.
+
+    The path is embedded both in a single-quoted LOCATION literal and in a backtick-quoted
+    ``parquet.`...``` read path, so a single-quote or backtick could break out of either.
+    """
+    if "'" in s3_path or "`" in s3_path:
+        raise ValueError(f"Invalid character in S3 path: {s3_path!r}")
+    return s3_path
 
 
 class DatabricksClient:
@@ -58,8 +92,6 @@ class DatabricksClient:
         Returns:
             Access token string.
         """
-        import requests
-
         token_url = f"https://{hostname}/oidc/v1/token"
 
         response = requests.post(
@@ -79,10 +111,8 @@ class DatabricksClient:
         table: str,
         schema: str,
         s3_path: str,
-        file_format: FileFormat = "PARQUET",
-        overwrite: bool = True,
     ) -> str:
-        """Export a Databricks table directly to S3 using SQL.
+        """Export a Databricks table directly to S3 as Parquet using SQL.
 
         Uses CREATE TABLE ... AS SELECT to write data to S3.
 
@@ -90,28 +120,25 @@ class DatabricksClient:
             table: Table name to export.
             schema: Schema (database) containing the table.
             s3_path: S3 path (e.g., 's3://bucket/prefix/').
-            file_format: Output format - PARQUET, CSV, JSON, etc.
-            overwrite: Whether to overwrite existing data.
 
         Returns:
             S3 path where data was written.
         """
-        # Use a temporary external table name
-        temp_table = f"_masque_export_{table}"
-        full_temp_table = f"{schema}.{temp_table}"
-        source_table = f"{schema}.{table}"
+        safe_path = _validate_s3_path(s3_path)
+        # Use a temporary external table name (quote the qualified schema, then the table part).
+        full_temp_table = _quote_identifier(f"{schema}._masque_export_{table}")
+        source_table = _quote_identifier(f"{schema}.{table}")
 
         with self._get_connection() as conn:
             with conn.cursor() as cursor:
-                # Drop temp table if exists
-                if overwrite:
-                    cursor.execute(f"DROP TABLE IF EXISTS {full_temp_table}")
+                # Drop any leftover temp table from a previous run
+                cursor.execute(f"DROP TABLE IF EXISTS {full_temp_table}")
 
                 # Create external table at S3 location with data from source
                 export_sql = f"""
                 CREATE TABLE {full_temp_table}
-                USING {file_format}
-                LOCATION '{s3_path}'
+                USING {FILE_FORMAT}
+                LOCATION '{safe_path}'
                 AS SELECT * FROM {source_table}
                 """
                 cursor.execute(export_sql)
@@ -126,10 +153,9 @@ class DatabricksClient:
         s3_path: str,
         target_table: str,
         schema: str,
-        file_format: FileFormat = "PARQUET",
         mode: ImportMode = "OVERWRITE",
     ) -> None:
-        """Import data from S3 into a managed Databricks table.
+        """Import Parquet data from S3 into a managed Databricks table.
 
         Copies data into managed storage via CTAS / INSERT, so the target table is
         self-contained and the source S3 files can be deleted afterwards.
@@ -138,11 +164,12 @@ class DatabricksClient:
             s3_path: S3 path containing the files to import.
             target_table: Target table name.
             schema: Schema (database) for the target table.
-            file_format: Source file format - PARQUET, CSV, JSON, etc.
             mode: Import mode - 'OVERWRITE' (drop and replace) or 'APPEND' (insert into existing).
         """
-        full_table = f"{schema}.{target_table}"
-        source = f"{file_format.lower()}.`{s3_path}`"
+        safe_path = _validate_s3_path(s3_path)
+        full_table = _quote_identifier(f"{schema}.{target_table}")
+        # Databricks file-format read syntax: e.g. ``parquet.`s3://bucket/prefix```.
+        source = f"{FILE_FORMAT.lower()}.`{safe_path}`"
 
         with self._get_connection() as conn:
             with conn.cursor() as cursor:
@@ -181,9 +208,10 @@ class DatabricksClient:
         """
         if not rows:
             return
-        col_list = ", ".join(columns)
+        safe_table = _quote_identifier(table)
+        col_list = ", ".join(_quote_identifier(c) for c in columns)
         placeholders = ", ".join("?" * len(columns))
-        sql = f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})"
+        sql = f"INSERT INTO {safe_table} ({col_list}) VALUES ({placeholders})"
         with self._get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.executemany(sql, rows)

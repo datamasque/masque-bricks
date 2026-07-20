@@ -10,14 +10,21 @@ databricks:
 
   # Personal Access Token
   # Generate in Databricks: User settings > Developer > Access tokens
-  token: dapi1234567890abcdef
+  token: <your-databricks-pat>
+
+  # OAuth M2M (Service Principal) — use instead of token if preferred:
+  # client_id: <your-service-principal-client-id>
+  # client_secret: <your-service-principal-secret>
 
 datamasque:
   # DataMasque instance URL
   host: https://datamasque.example.com
   # DataMasque login credentials
-  username: admin
-  password: your-password
+  username: <your-datamasque-username>
+  password: <your-datamasque-password>
+  # Verify the DataMasque TLS certificate. Default true (secure).
+  # Set false only for instances with a self-signed cert you trust.
+  # verify_ssl: true
 
 s3:
   # S3 bucket for intermediate file storage

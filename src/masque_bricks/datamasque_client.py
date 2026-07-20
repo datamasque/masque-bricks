@@ -4,6 +4,9 @@ import time
 from typing import Any
 
 import requests
+import urllib3
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import DataMasqueConfig
 
@@ -17,7 +20,7 @@ class DataMasqueError(Exception):
 class DataMasqueClient:
     """Client for interacting with the DataMasque API."""
 
-    def __init__(self, config: DataMasqueConfig, verify_ssl: bool = False):
+    def __init__(self, config: DataMasqueConfig, verify_ssl: bool | None = None):
         """Initialize the DataMasque client.
 
         Authentication is deferred until the first API call so that constructing the client
@@ -26,17 +29,32 @@ class DataMasqueClient:
 
         Args:
             config: DataMasque API configuration.
-            verify_ssl: Whether to verify SSL certificates (default False for self-signed certs).
+            verify_ssl: Whether to verify SSL certificates. Defaults to ``config.verify_ssl``
+                (default secure). Pass False only for self-signed certs you trust.
         """
         self.config = config
         self.base_url = config.host.rstrip("/")
+        self.verify_ssl = config.verify_ssl if verify_ssl is None else verify_ssl
         self.session = requests.Session()
-        self.session.verify = verify_ssl
+        self.session.verify = self.verify_ssl
+        # Retry only idempotent calls on transient network / 5xx / 429 errors with backoff.
+        # POST/PATCH are excluded: a 5xx after DataMasque has already processed the request
+        # would otherwise re-send it and launch duplicate masking runs / connections / rulesets.
+        retry = Retry(
+            total=4,
+            connect=0,  # fail fast on a down host; retries here just delay the error ~14s
+            backoff_factor=1,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET"}),
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self._authenticated = False
 
-        # Suppress SSL warnings when verification is disabled
-        if not verify_ssl:
-            import urllib3
+        # Only suppress the insecure-request warning when the user has explicitly
+        # opted out of verification — otherwise leave warnings intact.
+        if not self.verify_ssl:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     def _ensure_authenticated(self) -> None:
@@ -357,7 +375,18 @@ class DataMasqueClient:
         start_time = time.time()
 
         while True:
-            run = self.get_run(run_id)
+            try:
+                run = self.get_run(run_id)
+            except (DataMasqueError, requests.RequestException) as exc:
+                # A transient blip while polling shouldn't kill a long-running wait;
+                # keep polling until the overall timeout is hit.
+                if time.time() - start_time > timeout:
+                    raise DataMasqueError(
+                        f"Masking run polling failed after {timeout} seconds: {exc}"
+                    ) from exc
+                time.sleep(poll_interval)
+                continue
+
             status = run.get("status")
 
             if status == "finished":

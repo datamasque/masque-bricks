@@ -1,9 +1,6 @@
-"""S3 client for file upload/download operations."""
-
-from pathlib import Path
+"""S3 client for listing and deleting masking intermediate files."""
 
 import boto3
-from botocore.exceptions import ClientError
 
 from .config import S3Config
 
@@ -29,33 +26,6 @@ class S3Client:
         self.config = config
         self.client = boto3.client("s3", region_name=config.region)
 
-    def upload_file(self, local_path: str, s3_key: str) -> str:
-        """Upload a local file to S3.
-
-        Args:
-            local_path: Path to the local file.
-            s3_key: S3 object key (path within the bucket).
-
-        Returns:
-            S3 URI of the uploaded file (s3://bucket/key).
-        """
-        self.client.upload_file(local_path, self.config.bucket, s3_key)
-        return s3_uri(self.config.bucket, s3_key)
-
-    def download_file(self, s3_key: str, local_path: str) -> str:
-        """Download a file from S3 to local path.
-
-        Args:
-            s3_key: S3 object key to download.
-            local_path: Local path to save the file.
-
-        Returns:
-            Path to the downloaded file.
-        """
-        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-        self.client.download_file(self.config.bucket, s3_key, local_path)
-        return local_path
-
     def list_files(self, prefix: str) -> list[str]:
         """List files under a prefix in the bucket.
 
@@ -75,14 +45,6 @@ class S3Client:
 
         return keys
 
-    def delete_file(self, s3_key: str) -> None:
-        """Delete a file from S3.
-
-        Args:
-            s3_key: S3 object key to delete.
-        """
-        self.client.delete_object(Bucket=self.config.bucket, Key=s3_key)
-
     def delete_prefix(self, prefix: str) -> int:
         """Delete all files under a prefix.
 
@@ -101,21 +63,4 @@ class S3Client:
                 Delete={"Objects": [{"Key": k} for k in chunk]},
             )
         return len(keys)
-
-    def file_exists(self, s3_key: str) -> bool:
-        """Check if a file exists in S3.
-
-        Args:
-            s3_key: S3 object key to check.
-
-        Returns:
-            True if the file exists, False otherwise.
-        """
-        try:
-            self.client.head_object(Bucket=self.config.bucket, Key=s3_key)
-            return True
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "404":
-                return False
-            raise
 
