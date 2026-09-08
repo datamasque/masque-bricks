@@ -24,9 +24,9 @@ table untouched and produces a separate masked copy.
 Databricks data *in place* using a SQL Warehouse — covering Delta tables and
 Lakebase — without copying data out to S3 and back. If your tables fit the
 in-place model, prefer it: fewer moving parts, no S3 round-trip, no second copy
-to manage. See the DataMasque
-[native Databricks masking docs](https://datamasque.com/portal/documentation/latest/databricks.html)
-for setup.
+to manage. For setup, see the DataMasque connection docs for
+[Databricks SQL Warehouse](https://datamasque.com/portal/documentation/latest/database-connections/databricks-sql-warehouse.html)
+and [Databricks Lakebase](https://datamasque.com/portal/documentation/latest/database-connections/databricks-lakebase.html).
 
 **masque-bricks is the retained out-of-place option.** It is *not* deprecated.
 Use it when in-place masking does not fit your case — for example when you need
